@@ -16,6 +16,8 @@ pub struct Elm327 {
 
 impl Elm327 {
     /// Стандартная инициализация адаптера и автовыбор протокола.
+    /// Если авто-определение не нашло ЭБУ (частая болезнь дешёвых клонов),
+    /// перебираем протоколы вручную в порядке убывания распространённости.
     pub async fn init(t: Box<dyn Transport>) -> Result<Self> {
         let mut elm = Self {
             t,
@@ -28,12 +30,22 @@ impl Elm327 {
         elm.at("ATL0").await?; // linefeeds off
         elm.at("ATS0").await?; // spaces off
         elm.at("ATH0").await?; // headers off — упрощает разбор полезной нагрузки
+
         elm.at("ATSP0").await?; // автоматический выбор протокола
-        // Проверяем, что ЭБУ отвечает (запрос карты поддерживаемых PID'ов)
-        elm.query_pid(0x01, 0x00)
-            .await
-            .map_err(|_| ObdError::ConnectionFailed)?;
-        Ok(elm)
+        if elm.query_pid(0x01, 0x00).await.is_ok() {
+            return Ok(elm);
+        }
+
+        // Fallback: ручной перебор. 6-9 — CAN (ISO 15765-4), 3-5 — ISO/KWP/J1850
+        for proto in [6u8, 7, 8, 9, 3, 4, 5] {
+            elm.at(&format!("ATSP{proto}")).await?;
+            if elm.query_pid(0x01, 0x00).await.is_ok() {
+                // Фиксируем найденный протокол, чтобы адаптер не искал заново
+                let _ = elm.at(&format!("ATTP{proto}")).await;
+                return Ok(elm);
+            }
+        }
+        Err(ObdError::ConnectionFailed)
     }
 
     /// AT-команда адаптера.

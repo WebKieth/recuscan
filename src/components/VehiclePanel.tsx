@@ -8,7 +8,9 @@ export function VehiclePanel({ vehicle }: { vehicle: VehicleInfo | null }) {
   const rows: Array<[string, string]> = [
     ["VIN", vehicle.vin ?? "не определён"],
     ["Производитель", vehicle.manufacturer ?? "не определён"],
+    ["Год выпуска", vehicle.model_year?.toString() ?? "не определён"],
     ["Протокол OBD", vehicle.protocol ?? "не определён"],
+    ["Имя ЭБУ", vehicle.ecu_name ?? "нет данных"],
     ["Калибровка ЭБУ", vehicle.calibration_id ?? "нет данных"],
   ];
 

@@ -25,12 +25,20 @@ fn brand_descriptions(brand: &str) -> Option<&'static HashMap<String, String>> {
     static TOYOTA: OnceLock<HashMap<String, String>> = OnceLock::new();
     static FORD: OnceLock<HashMap<String, String>> = OnceLock::new();
     static LADA: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static BMW: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static MERCEDES: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static HYUNDAI: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static NISSAN: OnceLock<HashMap<String, String>> = OnceLock::new();
 
     let (cell, json) = match brand {
         "vag" => (&VAG, include_str!("../data/dtc/vag.json")),
         "toyota" => (&TOYOTA, include_str!("../data/dtc/toyota.json")),
         "ford" => (&FORD, include_str!("../data/dtc/ford.json")),
         "lada" => (&LADA, include_str!("../data/dtc/lada.json")),
+        "bmw" => (&BMW, include_str!("../data/dtc/bmw.json")),
+        "mercedes" => (&MERCEDES, include_str!("../data/dtc/mercedes.json")),
+        "hyundai" => (&HYUNDAI, include_str!("../data/dtc/hyundai.json")),
+        "nissan" => (&NISSAN, include_str!("../data/dtc/nissan.json")),
         _ => return None,
     };
     Some(cell.get_or_init(|| serde_json::from_str(json).unwrap_or_default()))
@@ -50,6 +58,15 @@ pub fn brand_key(manufacturer: &str) -> Option<&'static str> {
         Some("ford")
     } else if m.contains("lada") || m.contains("автоваз") {
         Some("lada")
+    } else if m.contains("bmw") {
+        Some("bmw")
+    } else if m.contains("mercedes") {
+        Some("mercedes")
+    } else if m.contains("hyundai") || m.contains("kia") {
+        // Hyundai и Kia делят платформы и коды
+        Some("hyundai")
+    } else if m.contains("nissan") || m.contains("datsun") || m.contains("infiniti") {
+        Some("nissan")
     } else {
         None
     }
@@ -176,5 +193,11 @@ mod tests {
         assert_eq!(description_for("P1349", None), None);
         // Русские марки
         assert!(description_for("P1602", Some("Lada (АвтоВАЗ)")).is_some());
+        // Новые бренды
+        assert!(description_for("P1525", Some("BMW")).is_some());
+        assert!(description_for("P1580", Some("Mercedes-Benz")).is_some());
+        // Hyundai и Kia делят базу
+        assert!(description_for("P1529", Some("Kia")).is_some());
+        assert!(description_for("P1320", Some("Nissan")).is_some());
     }
 }

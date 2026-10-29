@@ -4,8 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 export interface VehicleInfo {
   vin: string | null;
   manufacturer: string | null;
+  model_year: number | null;
   protocol: string | null;
   calibration_id: string | null;
+  ecu_name: string | null;
   supported_pids: string[];
 }
 

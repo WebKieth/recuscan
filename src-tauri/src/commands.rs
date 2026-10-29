@@ -174,6 +174,17 @@ async fn probe_vehicle(elm: &mut Elm327) -> VehicleInfo {
         .await
         .ok()
         .map(|p| String::from_utf8_lossy(&p).trim().to_string());
+    // Имя ЭБУ (090A) — полезно при поиске прошивок и TSB
+    let ecu_name = elm
+        .query_pid(0x09, 0x0A)
+        .await
+        .ok()
+        .map(|p| String::from_utf8_lossy(&p).trim().to_string())
+        .filter(|s| !s.is_empty());
+    // Год выпуска из 10-го символа VIN
+    let model_year = vin_str
+        .as_deref()
+        .and_then(|v| vin::model_year(v, current_year()));
 
     let supported_keys = supported
         .iter()
@@ -184,10 +195,22 @@ async fn probe_vehicle(elm: &mut Elm327) -> VehicleInfo {
     VehicleInfo {
         vin: vin_str,
         manufacturer,
+        model_year,
         protocol,
         calibration_id,
+        ecu_name,
         supported_pids: supported_keys,
     }
+}
+
+/// Текущий год (приблизительно; точности хватает для 30-летнего цикла VIN).
+fn current_year() -> u16 {
+    let days = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 86_400;
+    1970 + (days / 365) as u16
 }
 
 #[tauri::command]
