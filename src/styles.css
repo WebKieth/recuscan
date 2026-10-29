@@ -68,7 +68,7 @@ button.primary { background: var(--accent); color: #10131a; border-color: var(--
 .form-row { display: flex; gap: 16px; align-items: flex-end; margin: 12px 0; flex-wrap: wrap; }
 .form-row label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 
-input {
+input, select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;

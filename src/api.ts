@@ -22,6 +22,25 @@ export interface DtcReport {
   permanent: DtcEntry[];
 }
 
+export interface ReadinessItem {
+  name: string;
+  supported: boolean;
+  complete: boolean;
+}
+
+export interface FreezeFrameEntry {
+  key: string;
+  name: string;
+  unit: string;
+  value: number;
+}
+
+export interface FreezeFrame {
+  dtc: string | null;
+  description: string | null;
+  entries: FreezeFrameEntry[];
+}
+
 export interface PidInfo {
   key: string;
   name: string;
@@ -39,11 +58,16 @@ export interface Sample {
 export const api = {
   connectWifi: (host: string, port: number) =>
     invoke<VehicleInfo>("connect_wifi", { host, port }),
+  connectSerial: (path: string, baud: number) =>
+    invoke<VehicleInfo>("connect_serial", { path, baud }),
+  listSerialPorts: () => invoke<string[]>("list_serial_ports"),
   disconnect: () => invoke<void>("disconnect"),
   vehicleInfo: () => invoke<VehicleInfo | null>("vehicle_info"),
   availablePids: () => invoke<PidInfo[]>("available_pids"),
   readDtcs: () => invoke<DtcReport>("read_dtcs"),
   clearDtcs: () => invoke<void>("clear_dtcs"),
+  readReadiness: () => invoke<ReadinessItem[]>("read_readiness"),
+  readFreezeFrame: () => invoke<FreezeFrame>("read_freeze_frame"),
   startMonitoring: (keys: string[]) => invoke<void>("start_monitoring", { keys }),
   stopMonitoring: () => invoke<void>("stop_monitoring"),
 };

@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { api, DtcEntry, DtcReport } from "../api";
+import { api, DtcEntry, DtcReport, FreezeFrame, ReadinessItem } from "../api";
 
 export function DtcPanel({ connected }: { connected: boolean }) {
   const [report, setReport] = useState<DtcReport | null>(null);
+  const [readiness, setReadiness] = useState<ReadinessItem[] | null>(null);
+  const [freezeFrame, setFreezeFrame] = useState<FreezeFrame | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -11,6 +13,20 @@ export function DtcPanel({ connected }: { connected: boolean }) {
     setError(null);
     try {
       setReport(await api.readDtcs());
+      // Готовность мониторов подтягиваем вместе — важно для техосмотра
+      setReadiness(await api.readReadiness().catch(() => null));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadFreezeFrame() {
+    setBusy(true);
+    setError(null);
+    try {
+      setFreezeFrame(await api.readFreezeFrame());
     } catch (e) {
       setError(String(e));
     } finally {
@@ -74,6 +90,9 @@ export function DtcPanel({ connected }: { connected: boolean }) {
         <button onClick={clear} disabled={busy || !report}>
           Сбросить ошибки
         </button>
+        <button onClick={loadFreezeFrame} disabled={busy || !report}>
+          Freeze frame
+        </button>
         {report?.mil_on != null && (
           <span className={report.mil_on ? "status mil-on" : "status ok"}>
             Check Engine: {report.mil_on ? "ГОРИТ" : "не горит"}
@@ -94,6 +113,44 @@ export function DtcPanel({ connected }: { connected: boolean }) {
             </p>
           )}
         </>
+      )}
+      {readiness && (
+        <div className="dtc-section">
+          <h3>Готовность мониторов (важно для техосмотра)</h3>
+          <table className="info-table">
+            <tbody>
+              {readiness.map((r) => (
+                <tr key={r.name}>
+                  <td>{r.name}</td>
+                  <td className={r.complete ? "status ok" : "status mil-on"}>
+                    {r.complete ? "✓ готов" : "✗ не завершён"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {freezeFrame && (
+        <div className="dtc-section">
+          <h3>
+            Freeze frame — снимок в момент ошибки{" "}
+            {freezeFrame.dtc && <span className="dtc-code">{freezeFrame.dtc}</span>}
+          </h3>
+          {freezeFrame.description && <p>{freezeFrame.description}</p>}
+          <table className="info-table">
+            <tbody>
+              {freezeFrame.entries.map((e) => (
+                <tr key={e.key}>
+                  <td>{e.name}</td>
+                  <td>
+                    {e.value.toFixed(1)} {e.unit}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

@@ -9,11 +9,15 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::connect_wifi,
+            commands::connect_serial,
+            commands::list_serial_ports,
             commands::disconnect,
             commands::vehicle_info,
             commands::available_pids,
             commands::read_dtcs,
             commands::clear_dtcs,
+            commands::read_readiness,
+            commands::read_freeze_frame,
             commands::start_monitoring,
             commands::stop_monitoring,
         ])

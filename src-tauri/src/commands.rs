@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use obd_core::elm327::Elm327;
 use obd_core::profile::VehicleInfo;
+use obd_core::readiness::{self, ReadinessItem};
 use obd_core::transport::TcpTransport;
 use obd_core::{dtc, pid, vin, ObdError};
 use serde::Serialize;
@@ -64,7 +65,49 @@ pub async fn connect_wifi(
 ) -> Result<VehicleInfo, String> {
     let transport = TcpTransport::connect(&host, port).await.map_err(err)?;
     let mut elm = Elm327::init(Box::new(transport)).await.map_err(err)?;
+    let info = probe_vehicle(&mut elm).await;
 
+    *state.vehicle.lock().await = Some(info.clone());
+    *state.conn.lock().await = Some(Arc::new(Mutex::new(elm)));
+    Ok(info)
+}
+
+/// Подключение к USB/Serial ELM327 адаптеру (типичный бодрейт — 38400).
+#[tauri::command]
+pub async fn connect_serial(
+    state: State<'_, AppState>,
+    path: String,
+    baud: u32,
+) -> Result<VehicleInfo, String> {
+    #[cfg(feature = "serial")]
+    {
+        let transport = obd_core::transport::SerialTransport::open(&path, baud).map_err(err)?;
+        let mut elm = Elm327::init(Box::new(transport)).await.map_err(err)?;
+        let info = probe_vehicle(&mut elm).await;
+
+        *state.vehicle.lock().await = Some(info.clone());
+        *state.conn.lock().await = Some(Arc::new(Mutex::new(elm)));
+        return Ok(info);
+    }
+    #[cfg(not(feature = "serial"))]
+    {
+        let _ = (state, path, baud);
+        Err("сборка без поддержки Serial (feature `serial` отключён)".into())
+    }
+}
+
+/// Список последовательных портов для USB-подключения.
+#[tauri::command]
+pub async fn list_serial_ports() -> Result<Vec<String>, String> {
+    #[cfg(feature = "serial")]
+    return Ok(obd_core::transport::list_serial_ports());
+    #[cfg(not(feature = "serial"))]
+    Ok(Vec::new())
+}
+
+/// Автоопределение автомобиля после установки связи: протокол, карта PID'ов,
+/// VIN → производитель, калибровка ЭБУ.
+async fn probe_vehicle(elm: &mut Elm327) -> VehicleInfo {
     // Протокол, выбранный адаптером автоматически
     let protocol = elm.describe_protocol().await.ok();
 
@@ -108,17 +151,13 @@ pub async fn connect_wifi(
         .map(|d| d.key.to_string())
         .collect();
 
-    let info = VehicleInfo {
+    VehicleInfo {
         vin: vin_str,
         manufacturer,
         protocol,
         calibration_id,
         supported_pids: supported_keys,
-    };
-
-    *state.vehicle.lock().await = Some(info.clone());
-    *state.conn.lock().await = Some(Arc::new(Mutex::new(elm)));
-    Ok(info)
+    }
 }
 
 #[tauri::command]
@@ -159,10 +198,17 @@ pub async fn available_pids(state: State<'_, AppState>) -> Result<Vec<PidInfo>, 
 }
 
 /// Чтение ошибок: сохранённые (03), ожидающие (07), постоянные (0A) + статус MIL.
+/// Описания подбираются с учётом марки из автоопределённого VIN.
 #[tauri::command]
 pub async fn read_dtcs(state: State<'_, AppState>) -> Result<DtcReport, String> {
     let conn = state.conn.lock().await.clone();
     let conn = conn.ok_or(ObdError::NotConnected).map_err(err)?;
+    let manufacturer = state
+        .vehicle
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|v| v.manufacturer.clone());
     let mut elm = conn.lock().await;
 
     // Статус Check Engine и число кодов по мнению ЭБУ
@@ -178,7 +224,8 @@ pub async fn read_dtcs(state: State<'_, AppState>) -> Result<DtcReport, String> 
             Ok(data) => dtc::decode_list(&data)
                 .into_iter()
                 .map(|code| DtcEntry {
-                    description: dtc::description(&code).map(String::from),
+                    description: dtc::description_for(&code, manufacturer.as_deref())
+                        .map(String::from),
                     code,
                 })
                 .collect(),
@@ -192,6 +239,84 @@ pub async fn read_dtcs(state: State<'_, AppState>) -> Result<DtcReport, String> 
         stored: read(0x03, &mut elm).await,
         pending: read(0x07, &mut elm).await,
         permanent: read(0x0A, &mut elm).await,
+    })
+}
+
+/// Готовность диагностических мониторов (для техосмотра после сброса ошибок).
+#[tauri::command]
+pub async fn read_readiness(state: State<'_, AppState>) -> Result<Vec<ReadinessItem>, String> {
+    let conn = state.conn.lock().await.clone();
+    let conn = conn.ok_or(ObdError::NotConnected).map_err(err)?;
+    let mut elm = conn.lock().await;
+    let data = elm.query_pid(0x01, 0x01).await.map_err(err)?;
+    Ok(readiness::decode_readiness(&data))
+}
+
+#[derive(Serialize)]
+pub struct FreezeFrameEntry {
+    pub key: String,
+    pub name: String,
+    pub unit: String,
+    pub value: f64,
+}
+
+#[derive(Serialize)]
+pub struct FreezeFrame {
+    /// Код, вызвавший регистрацию freeze frame (Mode 02 PID 02).
+    pub dtc: Option<String>,
+    pub description: Option<String>,
+    pub entries: Vec<FreezeFrameEntry>,
+}
+
+/// Freeze frame — снимок параметров двигателя в момент регистрации ошибки (Mode 02).
+#[tauri::command]
+pub async fn read_freeze_frame(state: State<'_, AppState>) -> Result<FreezeFrame, String> {
+    let conn = state.conn.lock().await.clone();
+    let conn = conn.ok_or(ObdError::NotConnected).map_err(err)?;
+    let manufacturer = state
+        .vehicle
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|v| v.manufacturer.clone());
+    let mut elm = conn.lock().await;
+
+    let causative = elm
+        .query_pid(0x02, 0x02)
+        .await
+        .ok()
+        .and_then(|d| {
+            if d.len() >= 2 {
+                dtc::decode_pair(d[0], d[1])
+            } else {
+                None
+            }
+        });
+    let description = causative
+        .as_deref()
+        .and_then(|c| dtc::description_for(c, manufacturer.as_deref()))
+        .map(String::from);
+
+    let mut entries = Vec::new();
+    for def in pid::PIDS {
+        if let Ok(data) = elm.query_pid(0x02, def.pid).await {
+            if let Some(value) = (def.decode)(&data) {
+                entries.push(FreezeFrameEntry {
+                    key: def.key.into(),
+                    name: def.name.into(),
+                    unit: def.unit.into(),
+                    value,
+                });
+            }
+        }
+    }
+    if entries.is_empty() && causative.is_none() {
+        return Err("ЭБУ не вернул freeze frame (нет сохранённой ошибки)".into());
+    }
+    Ok(FreezeFrame {
+        dtc: causative,
+        description,
+        entries,
     })
 }
 

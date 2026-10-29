@@ -4,6 +4,7 @@ pub mod dtc;
 pub mod elm327;
 pub mod pid;
 pub mod profile;
+pub mod readiness;
 pub mod transport;
 pub mod vin;
 

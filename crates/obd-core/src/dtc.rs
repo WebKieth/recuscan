@@ -15,8 +15,54 @@ fn descriptions() -> &'static HashMap<String, String> {
 
 /// Человекочитаемое описание кода. None — код не найден
 /// (вероятно, производитель-специфичный: P1xxx/P2xxx/P3xxx и т.п.).
-pub fn description(code: &str) -> Option<&str> {
+pub fn description(code: &str) -> Option<&'static str> {
     descriptions().get(code).map(String::as_str)
+}
+
+/// Брендовые базы производитель-специфичных кодов (data/dtc/<brand>.json).
+fn brand_descriptions(brand: &str) -> Option<&'static HashMap<String, String>> {
+    static VAG: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static TOYOTA: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static FORD: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static LADA: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+    let (cell, json) = match brand {
+        "vag" => (&VAG, include_str!("../data/dtc/vag.json")),
+        "toyota" => (&TOYOTA, include_str!("../data/dtc/toyota.json")),
+        "ford" => (&FORD, include_str!("../data/dtc/ford.json")),
+        "lada" => (&LADA, include_str!("../data/dtc/lada.json")),
+        _ => return None,
+    };
+    Some(cell.get_or_init(|| serde_json::from_str(json).unwrap_or_default()))
+}
+
+/// Строка производителя (из vin::manufacturer) → ключ брендовой базы.
+pub fn brand_key(manufacturer: &str) -> Option<&'static str> {
+    let m = manufacturer.to_lowercase();
+    if ["volkswagen", "audi", "škoda", "skoda", "seat", "porsche"]
+        .iter()
+        .any(|b| m.contains(b))
+    {
+        Some("vag")
+    } else if m.contains("toyota") || m.contains("lexus") {
+        Some("toyota")
+    } else if m.contains("ford") {
+        Some("ford")
+    } else if m.contains("lada") || m.contains("автоваз") {
+        Some("lada")
+    } else {
+        None
+    }
+}
+
+/// Описание с учётом марки: сначала брендовая база, затем generic.
+pub fn description_for(code: &str, manufacturer: Option<&str>) -> Option<&'static str> {
+    if let Some(brand) = manufacturer.and_then(brand_key) {
+        if let Some(d) = brand_descriptions(brand).and_then(|m| m.get(code)) {
+            return Some(d.as_str());
+        }
+    }
+    description(code)
 }
 
 /// Статус диагностики из Mode 01 PID 01.
@@ -112,5 +158,23 @@ mod tests {
         assert!(!st.mil_on);
         assert_eq!(st.dtc_count, 0);
         assert_eq!(decode_monitor_status(&[]), None);
+    }
+
+    #[test]
+    fn brand_specific_lookup() {
+        // VAG-специфичный код находится только при указании марки
+        assert_eq!(description("P1500"), None);
+        assert_eq!(
+            description_for("P1500", Some("Volkswagen")),
+            Some("Реле топливного насоса (J17): неисправность цепи")
+        );
+        // Toyota
+        assert!(description_for("P1349", Some("Toyota")).is_some());
+        // Generic fallback работает для любой марки
+        assert!(description_for("P0420", Some("Ford")).is_some());
+        // Без марки — только generic
+        assert_eq!(description_for("P1349", None), None);
+        // Русские марки
+        assert!(description_for("P1602", Some("Lada (АвтоВАЗ)")).is_some());
     }
 }

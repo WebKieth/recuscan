@@ -87,6 +87,14 @@ impl Transport for SerialTransport {
     }
 }
 
+/// Список доступных последовательных портов (feature `serial`).
+#[cfg(feature = "serial")]
+pub fn list_serial_ports() -> Vec<String> {
+    serialport::available_ports()
+        .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
+        .unwrap_or_default()
+}
+
 // TODO(Phase 5): Bluetooth Classic SPP.
 // Android — собственный Tauri-плагин на Kotlin (BluetoothSocket/RFCOMM);
 // десктоп — BlueZ (Linux), IOBluetooth (macOS), Win32 SPP.
