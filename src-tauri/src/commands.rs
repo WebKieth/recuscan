@@ -39,10 +39,20 @@ pub struct PidInfo {
 }
 
 #[derive(Serialize)]
+pub struct DtcEntry {
+    pub code: String,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct DtcReport {
-    pub stored: Vec<String>,
-    pub pending: Vec<String>,
-    pub permanent: Vec<String>,
+    /// Горит ли Check Engine (None — ЭБУ не ответил на PID 0101).
+    pub mil_on: Option<bool>,
+    /// Число сохранённых кодов по данным ЭБУ.
+    pub mil_dtc_count: Option<u8>,
+    pub stored: Vec<DtcEntry>,
+    pub pending: Vec<DtcEntry>,
+    pub permanent: Vec<DtcEntry>,
 }
 
 /// Подключение к Wi-Fi ELM327 адаптеру + автоопределение автомобиля.
@@ -148,29 +158,50 @@ pub async fn available_pids(state: State<'_, AppState>) -> Result<Vec<PidInfo>, 
         .collect())
 }
 
-/// Чтение ошибок: сохранённые (03), ожидающие (07), постоянные (0A).
+/// Чтение ошибок: сохранённые (03), ожидающие (07), постоянные (0A) + статус MIL.
 #[tauri::command]
 pub async fn read_dtcs(state: State<'_, AppState>) -> Result<DtcReport, String> {
     let conn = state.conn.lock().await.clone();
     let conn = conn.ok_or(ObdError::NotConnected).map_err(err)?;
     let mut elm = conn.lock().await;
 
+    // Статус Check Engine и число кодов по мнению ЭБУ
+    let monitor = elm
+        .query_pid(0x01, 0x01)
+        .await
+        .ok()
+        .and_then(|d| dtc::decode_monitor_status(&d));
+
     // NO DATA у отдельного режима — не ошибка, просто нет кодов
     let read = |mode: u8, elm: &mut Elm327| async move {
         match elm.query_mode(mode).await {
-            Ok(data) => dtc::decode_list(&data),
+            Ok(data) => dtc::decode_list(&data)
+                .into_iter()
+                .map(|code| DtcEntry {
+                    description: dtc::description(&code).map(String::from),
+                    code,
+                })
+                .collect(),
             Err(_) => Vec::new(),
         }
     };
 
     Ok(DtcReport {
+        mil_on: monitor.map(|m| m.mil_on),
+        mil_dtc_count: monitor.map(|m| m.dtc_count),
         stored: read(0x03, &mut elm).await,
         pending: read(0x07, &mut elm).await,
         permanent: read(0x0A, &mut elm).await,
     })
 }
 
-/// Сброс ошибок (Mode 04). Также очищает freeze frame и readiness-данные ЭБУ.
+/// Сброс ошибок (Mode 04).
+///
+/// Безопасно для прошивки: Mode 04 стирает только диагностическую память
+/// (коды, freeze frame, readiness-флаги, адаптации топливных коррекций).
+/// Permanent DTC (Mode 0A) стандарт запрещает стирать — они уходят сами
+/// после нескольких поездок без неисправности. Многие ЭБУ отклоняют сброс
+/// при работающем двигателе — рекомендуется зажигание ON, двигатель заглушен.
 #[tauri::command]
 pub async fn clear_dtcs(state: State<'_, AppState>) -> Result<(), String> {
     let conn = state.conn.lock().await.clone();

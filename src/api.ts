@@ -9,10 +9,17 @@ export interface VehicleInfo {
   supported_pids: string[];
 }
 
+export interface DtcEntry {
+  code: string;
+  description: string | null;
+}
+
 export interface DtcReport {
-  stored: string[];
-  pending: string[];
-  permanent: string[];
+  mil_on: boolean | null;
+  mil_dtc_count: number | null;
+  stored: DtcEntry[];
+  pending: DtcEntry[];
+  permanent: DtcEntry[];
 }
 
 export interface PidInfo {

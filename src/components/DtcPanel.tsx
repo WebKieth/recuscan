@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, DtcReport } from "../api";
+import { api, DtcEntry, DtcReport } from "../api";
 
 export function DtcPanel({ connected }: { connected: boolean }) {
   const [report, setReport] = useState<DtcReport | null>(null);
@@ -19,7 +19,13 @@ export function DtcPanel({ connected }: { connected: boolean }) {
   }
 
   async function clear() {
-    if (!confirm("Сбросить все коды неисправностей в ЭБУ?")) return;
+    const ok = confirm(
+      "Сбросить коды неисправностей?\n\n" +
+        "Рекомендуется: двигатель заглушен, зажигание включено.\n" +
+        "Прошивка ЭБУ не затрагивается — стирается только диагностическая память.\n" +
+        "Внимание: также сбросятся readiness-мониторы (нужен drive cycle для техосмотра)."
+    );
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {
@@ -32,19 +38,26 @@ export function DtcPanel({ connected }: { connected: boolean }) {
     }
   }
 
-  if (!connected) return <p className="hint">Сначала подключитесь к адаптеру на вкладке «Подключение».</p>;
+  if (!connected) {
+    return <p className="hint">Сначала подключитесь к адаптеру на вкладке «Подключение».</p>;
+  }
 
-  const section = (title: string, codes: string[]) => (
+  const section = (title: string, entries: DtcEntry[]) => (
     <div className="dtc-section">
       <h3>
-        {title} <span className="badge">{codes.length}</span>
+        {title} <span className="badge">{entries.length}</span>
       </h3>
-      {codes.length === 0 ? (
+      {entries.length === 0 ? (
         <p className="hint">нет</p>
       ) : (
         <ul>
-          {codes.map((c) => (
-            <li key={c} className="dtc-code">{c}</li>
+          {entries.map((e) => (
+            <li key={e.code} className="dtc-item">
+              <span className="dtc-code">{e.code}</span>
+              <span className="dtc-desc">
+                {e.description ?? "Описание не найдено (вероятно, код специфичен для производителя)"}
+              </span>
+            </li>
           ))}
         </ul>
       )}
@@ -61,6 +74,12 @@ export function DtcPanel({ connected }: { connected: boolean }) {
         <button onClick={clear} disabled={busy || !report}>
           Сбросить ошибки
         </button>
+        {report?.mil_on != null && (
+          <span className={report.mil_on ? "status mil-on" : "status ok"}>
+            Check Engine: {report.mil_on ? "ГОРИТ" : "не горит"}
+            {report.mil_dtc_count != null && ` · кодов по ЭБУ: ${report.mil_dtc_count}`}
+          </span>
+        )}
       </div>
       {error && <p className="error">Ошибка: {error}</p>}
       {report && (
@@ -68,6 +87,12 @@ export function DtcPanel({ connected }: { connected: boolean }) {
           {section("Сохранённые (Mode 03)", report.stored)}
           {section("Ожидающие (Mode 07)", report.pending)}
           {section("Постоянные (Mode 0A)", report.permanent)}
+          {report.permanent.length > 0 && (
+            <p className="hint">
+              Постоянные коды нельзя стереть вручную — ЭБУ удалит их сам после нескольких
+              поездок, в которых неисправность больше не проявляется.
+            </p>
+          )}
         </>
       )}
     </section>
