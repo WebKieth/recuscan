@@ -1,0 +1,3 @@
+[default]
+description = "Bluetooth SPP (RFCOMM) транспорт ELM327"
+permissions = ["allow-list-paired"]

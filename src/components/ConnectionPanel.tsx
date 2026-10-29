@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, VehicleInfo } from "../api";
+import { api, BtDevice, VehicleInfo } from "../api";
 
 interface Props {
   connected: boolean;
@@ -17,6 +17,8 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
   const [serialPath, setSerialPath] = useState("");
   const [baud, setBaud] = useState(38400);
   const [serialPorts, setSerialPorts] = useState<string[] | null>(null);
+  const [btAddress, setBtAddress] = useState("");
+  const [btDevices, setBtDevices] = useState<BtDevice[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,7 +29,9 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
       const info =
         mode === "wifi"
           ? await api.connectWifi(host, port)
-          : await api.connectSerial(serialPath, baud);
+          : mode === "usb"
+            ? await api.connectSerial(serialPath, baud)
+            : await api.connectBt(btAddress);
       onConnected(info);
     } catch (e) {
       setError(String(e));
@@ -38,6 +42,16 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
 
   async function refreshPorts() {
     setSerialPorts(await api.listSerialPorts().catch(() => []));
+  }
+
+  async function refreshBt() {
+    setError(null);
+    try {
+      setBtDevices(await api.listBtDevices());
+    } catch (e) {
+      setError(String(e));
+      setBtDevices([]);
+    }
   }
 
   async function disconnect() {
@@ -121,10 +135,33 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
       )}
 
       {mode === "bt" && (
-        <p className="hint">
-          Bluetooth Classic SPP поддерживается на Android (сопряжение через настройки системы).
-          На iOS SPP заблокирован Apple — используйте Wi-Fi адаптер.
-        </p>
+        <>
+          <p className="hint">
+            Сначала сопрягите адаптер в настройках Bluetooth Android (обычно имя «OBDII»,
+            PIN 1234 или 0000), затем выберите его ниже. iOS не поддерживает Bluetooth SPP.
+          </p>
+          <div className="form-row">
+            <label>
+              Устройство
+              <select
+                value={btAddress}
+                onChange={(e) => setBtAddress(e.target.value)}
+                onFocus={() => btDevices === null && refreshBt()}
+                disabled={connected || busy}
+              >
+                <option value="">— выбрать —</option>
+                {(btDevices ?? []).map((d) => (
+                  <option key={d.address} value={d.address}>
+                    {d.name} ({d.address})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button onClick={refreshBt} disabled={connected || busy}>
+              Обновить
+            </button>
+          </div>
+        </>
       )}
 
       <div className="form-row">
@@ -134,7 +171,7 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
           <button
             className="primary"
             onClick={connect}
-            disabled={busy || mode === "bt" || (mode === "usb" && !serialPath)}
+            disabled={busy || (mode === "usb" && !serialPath) || (mode === "bt" && !btAddress)}
           >
             {busy ? "Подключение…" : "Подключить"}
           </button>

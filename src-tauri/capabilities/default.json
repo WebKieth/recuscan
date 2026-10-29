@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Разрешения по умолчанию для главного окна",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "btspp:default"]
 }

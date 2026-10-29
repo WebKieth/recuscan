@@ -55,11 +55,19 @@ export interface Sample {
   ts: number;
 }
 
+export interface BtDevice {
+  name: string;
+  address: string;
+}
+
 export const api = {
   connectWifi: (host: string, port: number) =>
     invoke<VehicleInfo>("connect_wifi", { host, port }),
   connectSerial: (path: string, baud: number) =>
     invoke<VehicleInfo>("connect_serial", { path, baud }),
+  connectBt: (address: string) =>
+    invoke<VehicleInfo>("connect_bt", { address }),
+  listBtDevices: () => invoke<BtDevice[]>("plugin:btspp|list_paired"),
   listSerialPorts: () => invoke<string[]>("list_serial_ports"),
   disconnect: () => invoke<void>("disconnect"),
   vehicleInfo: () => invoke<VehicleInfo | null>("vehicle_info"),

@@ -105,6 +105,36 @@ pub async fn list_serial_ports() -> Result<Vec<String>, String> {
     Ok(Vec::new())
 }
 
+/// Подключение к Bluetooth Classic SPP адаптеру (только Android;
+/// на iOS SPP заблокирован Apple — там только Wi-Fi адаптеры).
+#[tauri::command]
+pub async fn connect_bt(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    address: String,
+) -> Result<VehicleInfo, String> {
+    #[cfg(target_os = "android")]
+    {
+        let plugin = app
+            .state::<tauri_plugin_btspp::BtSpp<tauri::Wry>>()
+            .inner()
+            .clone();
+        plugin.connect(address).map_err(|e| e.to_string())?;
+        let transport = crate::bt::BtTransport::new(plugin);
+        let mut elm = Elm327::init(Box::new(transport)).await.map_err(err)?;
+        let info = probe_vehicle(&mut elm).await;
+
+        *state.vehicle.lock().await = Some(info.clone());
+        *state.conn.lock().await = Some(Arc::new(Mutex::new(elm)));
+        return Ok(info);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, state, address);
+        Err("Bluetooth SPP доступен только на Android (на iOS SPP заблокирован Apple)".into())
+    }
+}
+
 /// Автоопределение автомобиля после установки связи: протокол, карта PID'ов,
 /// VIN → производитель, калибровка ЭБУ.
 async fn probe_vehicle(elm: &mut Elm327) -> VehicleInfo {
@@ -218,28 +248,32 @@ pub async fn read_dtcs(state: State<'_, AppState>) -> Result<DtcReport, String> 
         .ok()
         .and_then(|d| dtc::decode_monitor_status(&d));
 
-    // NO DATA у отдельного режима — не ошибка, просто нет кодов
-    let read = |mode: u8, elm: &mut Elm327| async move {
-        match elm.query_mode(mode).await {
-            Ok(data) => dtc::decode_list(&data)
-                .into_iter()
-                .map(|code| DtcEntry {
-                    description: dtc::description_for(&code, manufacturer.as_deref())
-                        .map(String::from),
-                    code,
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    };
-
     Ok(DtcReport {
         mil_on: monitor.map(|m| m.mil_on),
         mil_dtc_count: monitor.map(|m| m.dtc_count),
-        stored: read(0x03, &mut elm).await,
-        pending: read(0x07, &mut elm).await,
-        permanent: read(0x0A, &mut elm).await,
+        stored: read_dtc_mode(&mut elm, 0x03, manufacturer.as_deref()).await,
+        pending: read_dtc_mode(&mut elm, 0x07, manufacturer.as_deref()).await,
+        permanent: read_dtc_mode(&mut elm, 0x0A, manufacturer.as_deref()).await,
     })
+}
+
+/// Прочитать коды одного режима (03/07/0A) с расшифровкой по базе.
+/// NO DATA — не ошибка, просто нет кодов.
+async fn read_dtc_mode(
+    elm: &mut Elm327,
+    mode: u8,
+    manufacturer: Option<&str>,
+) -> Vec<DtcEntry> {
+    match elm.query_mode(mode).await {
+        Ok(data) => dtc::decode_list(&data)
+            .into_iter()
+            .map(|code| DtcEntry {
+                description: dtc::description_for(&code, manufacturer).map(String::from),
+                code,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Готовность диагностических мониторов (для техосмотра после сброса ошибок).

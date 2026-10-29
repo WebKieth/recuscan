@@ -17,6 +17,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 obd-core = { path = "../crates/obd-core" }
+tauri-plugin-btspp = { path = "../plugins/tauri-plugin-btspp" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+base64 = "0.22"
+async-trait = "0.1"
 
 [features]
 # USB/Serial транспорт: cargo build --features serial

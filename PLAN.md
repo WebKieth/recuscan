@@ -50,25 +50,29 @@ OBD-ядро                   src-tauri/src/obd/
 - [ ] Расширение базы: manufacturer-specific коды по маркам (после автоопределения VIN)
 
 ### Phase 3 — Мониторинг в реальном времени
-- [ ] Цикл опроса выбранных PID'ов в tokio-таске, события `obd-sample` в UI
-- [ ] Графики: обороты (0C), скорость (0D), нагрузка (04), коррекции смеси STFT/LTFT (06–09), MAF (10)
-- [ ] Мгновенный расход: PID 5E либо оценка по MAF (бензин: L/ч ≈ MAF·3600/(14.7·720)); L/100км при скорости > 0
+- [x] Цикл опроса выбранных PID'ов в tokio-таске, события `obd-sample` в UI
+- [x] Графики: обороты (0C), скорость (0D), нагрузка (04), коррекции смеси STFT/LTFT (06–09), MAF (10)
+- [x] Мгновенный расход: PID 5E либо оценка по MAF (бензин: L/ч ≈ MAF·3600/(14.7·720)); L/100км при скорости > 0
 - [ ] Адаптивная частота опроса (быстрые PID чаще), индикатор samples/sec
 
 ### Phase 4 — USB Serial + эмулятор
-- [ ] `serialport` за feature-флагом, выбор порта/бодрейта в UI
+- [x] `serialport` за feature-флагом (default on; для Android-сборки `--no-default-features`), выбор порта/бодрейта в UI
 - [ ] Интеграционные тесты против OBDSim (эмулятор ELM327) в CI
 
 ### Phase 5 — Android + Bluetooth SPP
-- [ ] `tauri android init`, сборка APK/AAB
-- [ ] Собственный Tauri-плагин: Kotlin BluetoothSocket (RFCOMM), pairing, permissions (BLUETOOTH_CONNECT на API 31+)
-- [ ] Выбор сопряжённого устройства в UI
-- [ ] Десктопный BT: BlueZ (Linux) / IOBluetooth (macOS) — по возможности
+- [ ] `tauri android init` — требует Android SDK/NDK (см. https://v2.tauri.app/start/prerequisites/#android)
+- [x] Плагин `plugins/tauri-plugin-btspp`: Kotlin BluetoothSocket (RFCOMM), permissions BLUETOOTH_CONNECT, список сопряжённых устройств
+- [x] `BtTransport` (src-tauri/src/bt.rs): байты через JNI-мост (base64), реализует `Transport`
+- [x] Вкладка Bluetooth в UI: список сопряжённых устройств, подключение
+- [ ] Прогон на реальном устройстве + итерации по API tauri-android (помечено TODO в Kotlin)
 
 ### Phase 6 — Полировка
+- [x] Freeze frame (Mode 02) — снимок параметров в момент ошибки
+- [x] Readiness-мониторы (PID 0101) — готовность к техосмотру
+- [x] Брендовые базы DTC по VIN (VAG, Toyota, Ford, Lada)
 - [ ] Сохранение сессий/тrips, экспорт CSV
-- [ ] Freeze frame (Mode 02), readiness monitors (Mode 01 PID 01)
-- [ ] Иконки, splashscreen, сборка бандлов (`npm run tauri icon logo.png`)
+- [ ] Расширение брендовых баз (BMW, Mercedes, Hyundai/Kia, Nissan)
+- [ ] Иконки, splashscreen, сборка бандлов
 - [ ] CI: lint + тесты + сборка под Linux/macOS/Android
 
 ## Тестирование

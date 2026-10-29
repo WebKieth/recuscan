@@ -24,9 +24,9 @@ npm run tauri dev      # десктоп в dev-режиме
 cargo test --manifest-path src-tauri/Cargo.toml   # тесты OBD-ядра
 ```
 
-Сборка релиза: `npm run tauri build` (перед бандлингом сгенерируйте иконки: `npm run tauri icon path/to/logo.png`).
+Сборка релиза: `npm run tauri build`.
 
-Android: `npm run tauri android init` → `npm run tauri android dev`.
+Android: установите Android SDK/NDK по [инструкции Tauri](https://v2.tauri.app/start/prerequisites/#android), затем `npm run tauri android init` и `npm run tauri android dev`. Bluetooth Classic SPP реализован собственным плагином `plugins/tauri-plugin-btspp` (на iOS SPP заблокирован Apple — используйте Wi-Fi адаптер). Для Android-сборки без USB-Serial: `cargo build --no-default-features` (feature `serial`).
 
 ## Тестирование без машины
 
