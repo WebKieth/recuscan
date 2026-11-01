@@ -55,4 +55,31 @@ impl<R: Runtime> BtSpp<R> {
         self.0.run_mobile_plugin::<()>("disconnect", ())?;
         Ok(())
     }
+
+    /// SAF-выбор папки экспорта. None в uri — пользователь отменил.
+    pub fn pick_folder(&self) -> Result<PickedUri> {
+        Ok(self.0.run_mobile_plugin::<PickedUri>("pickFolder", ())?)
+    }
+
+    /// SAF-выбор файла лога для импорта. None в uri — отмена.
+    pub fn pick_log_file(&self) -> Result<PickedUri> {
+        Ok(self.0.run_mobile_plugin::<PickedUri>("pickLogFile", ())?)
+    }
+
+    /// Записать экспорт: в SAF-папку либо в папку по умолчанию (Загрузки/recuscan).
+    pub fn save_export(&self, args: SaveExportArgs) -> Result<SaveExportResponse> {
+        Ok(self.0.run_mobile_plugin::<SaveExportResponse>("saveExport", args)?)
+    }
+
+    /// Список экспортированных логов в выбранной/дефолтной папке.
+    pub fn list_exports(&self, tree_uri: Option<String>) -> Result<Vec<ExportFileEntry>> {
+        let resp: ListExportsResponse =
+            self.0.run_mobile_plugin("listExports", ListExportsArgs { tree_uri })?;
+        Ok(resp.files)
+    }
+
+    /// Прочитать экспортированный файл (content:// или file:// URI) → base64.
+    pub fn read_export(&self, uri: String) -> Result<ReadResponse> {
+        Ok(self.0.run_mobile_plugin::<ReadResponse>("readExport", ReadExportArgs { uri })?)
+    }
 }

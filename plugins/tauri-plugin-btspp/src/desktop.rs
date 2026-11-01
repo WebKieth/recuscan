@@ -42,4 +42,24 @@ impl<R: Runtime> BtSpp<R> {
     pub fn disconnect(&self) -> Result<()> {
         Err(Error::Unsupported)
     }
+
+    pub fn pick_folder(&self) -> Result<PickedUri> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn pick_log_file(&self) -> Result<PickedUri> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn save_export(&self, _args: SaveExportArgs) -> Result<SaveExportResponse> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn list_exports(&self, _tree_uri: Option<String>) -> Result<Vec<ExportFileEntry>> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn read_export(&self, _uri: String) -> Result<ReadResponse> {
+        Err(Error::Unsupported)
+    }
 }

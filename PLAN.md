@@ -66,13 +66,18 @@ OBD-ядро                   src-tauri/src/obd/
 - [x] Плагин `plugins/tauri-plugin-btspp`: Kotlin BluetoothSocket (RFCOMM), permissions BLUETOOTH_CONNECT, список сопряжённых устройств
 - [x] `BtTransport` (src-tauri/src/bt.rs): байты через JNI-мост (base64), реализует `Transport`
 - [x] Вкладка Bluetooth в UI: список сопряжённых устройств, подключение
-- [ ] Прогон на реальном устройстве + итерации по API tauri-android (помечено TODO в Kotlin)
+- [x] Итерации по API tauri-android 2.12: `invoke.getArgs()`, `@PermissionCallback`, `project(":tauri-android")` в gradle — debug APK собирается
+- [ ] Прогон на реальном устройстве (сопряжение адаптера, SPP-коннект, мониторинг)
 
 ### Phase 6 — Полировка
 - [x] Freeze frame (Mode 02) — снимок параметров в момент ошибки
 - [x] Readiness-мониторы (PID 0101) — готовность к техосмотру
 - [x] Брендовые базы DTC по VIN (VAG, Toyota, Ford, Lada, BMW, Mercedes, Hyundai/Kia, Nissan — 8 марок)
-- [ ] Сохранение сессий/тrips, экспорт CSV
+- [x] Запись мониторинга в CSV (кнопка на дашборде, BOM для Excel, путь к файлу показывается в UI)
+- [x] Экспорт логов: форматы CSV / JSON / XLS (SpreadsheetML), выбор папки; запись во временный файл, экспорт при остановке
+- [x] Папка экспорта по умолчанию вне android/data: Android — MediaStore `Download/recuscan` или SAF-папка на выбор; десктоп — `~/Documents/recuscan` с диалогом выбора
+- [x] Вкладка «Анализ логов»: список логов из папки экспорта, импорт CSV/JSON, графики с зумом/панорамой (колесо, выделение, «рука»), конструктор сводных графиков
+- [ ] Сохранение сессий/trips, просмотр истории логов в приложении
 - [ ] Расширение брендовых баз (Mazda, Subaru, Mitsubishi, GM)
 - [ ] Иконки, splashscreen, сборка бандлов
 - [ ] CI: lint + тесты + сборка под Linux/macOS/Android

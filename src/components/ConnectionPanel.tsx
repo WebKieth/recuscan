@@ -9,6 +9,18 @@ interface Props {
 
 type Mode = "wifi" | "usb" | "bt";
 
+/** Протоколы ELM327 (ATSP). null — авто с последующим перебором. */
+const PROTOCOLS: { value: number | null; label: string }[] = [
+  { value: null, label: "Авто (перебор протоколов)" },
+  { value: 3, label: "ISO 9141-2 (K-line; VW/VAZ ~1996–2005)" },
+  { value: 4, label: "ISO 14230-4 KWP2000 (5-бод инициализация)" },
+  { value: 5, label: "ISO 14230-4 KWP2000 (быстрая инициализация)" },
+  { value: 6, label: "ISO 15765-4 CAN (11 бит, 500 кбит)" },
+  { value: 7, label: "ISO 15765-4 CAN (29 бит, 500 кбит)" },
+  { value: 8, label: "ISO 15765-4 CAN (11 бит, 250 кбит)" },
+  { value: 9, label: "ISO 15765-4 CAN (29 бит, 250 кбит)" },
+];
+
 export function ConnectionPanel({ connected, onConnected, onDisconnected }: Props) {
   const [mode, setMode] = useState<Mode>("wifi");
   // Стандартный адрес большинства Wi-Fi ELM327 адаптеров
@@ -19,6 +31,7 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
   const [serialPorts, setSerialPorts] = useState<string[] | null>(null);
   const [btAddress, setBtAddress] = useState("");
   const [btDevices, setBtDevices] = useState<BtDevice[] | null>(null);
+  const [protocol, setProtocol] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,10 +41,10 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
     try {
       const info =
         mode === "wifi"
-          ? await api.connectWifi(host, port)
+          ? await api.connectWifi(host, port, protocol)
           : mode === "usb"
-            ? await api.connectSerial(serialPath, baud)
-            : await api.connectBt(btAddress);
+            ? await api.connectSerial(serialPath, baud, protocol)
+            : await api.connectBt(btAddress, protocol);
       onConnected(info);
     } catch (e) {
       setError(String(e));
@@ -163,6 +176,27 @@ export function ConnectionPanel({ connected, onConnected, onDisconnected }: Prop
           </div>
         </>
       )}
+
+      <div className="form-row">
+        <label>
+          Протокол
+          <select
+            value={protocol === null ? "" : String(protocol)}
+            onChange={(e) => setProtocol(e.target.value === "" ? null : Number(e.target.value))}
+            disabled={connected || busy}
+          >
+            {PROTOCOLS.map((p) => (
+              <option key={String(p.value)} value={p.value === null ? "" : p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="hint">
+        Если «Авто» не подключается к старому авто (K-line): выберите ISO 9141-2, при неудаче —
+        KWP2000. Зажигание должно быть включено.
+      </p>
 
       <div className="form-row">
         {connected ? (

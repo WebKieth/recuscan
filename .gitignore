@@ -2,5 +2,8 @@ node_modules/
 dist/
 target/
 src-tauri/gen/
+plugins/tauri-plugin-btspp/android/build
+plugins/tauri-plugin-btspp/android/.tauri/
+*.apk
 *.log
 .DS_Store

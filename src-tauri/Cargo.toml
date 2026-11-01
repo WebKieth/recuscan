@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -26,3 +27,11 @@ async-trait = "0.1"
 [features]
 # USB/Serial транспорт: cargo build --features serial
 serial = ["obd-core/serial"]
+
+# Минимальный размер release-сборки (важно для Android-APK)
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

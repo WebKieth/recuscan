@@ -110,6 +110,15 @@ pub static PIDS: &[PidDef] = &[
         decode: |d| a1(d),
     },
     PidDef {
+        key: "timing_advance",
+        pid: 0x0E,
+        name: "Угол опережения зажигания",
+        unit: "°",
+        min: -64.0,
+        max: 63.5,
+        decode: |d| a1(d).map(|a| a / 2.0 - 64.0),
+    },
+    PidDef {
         key: "iat",
         pid: 0x0F,
         name: "Температура впускного воздуха",
@@ -135,6 +144,42 @@ pub static PIDS: &[PidDef] = &[
         min: 0.0,
         max: 100.0,
         decode: |d| a1(d).map(|a| a * 100.0 / 255.0),
+    },
+    PidDef {
+        key: "o2_b1s1",
+        pid: 0x14,
+        name: "Лямбда B1S1 (узкополосный)",
+        unit: "В",
+        min: 0.0,
+        max: 1.275,
+        decode: |d| a2(d).map(|(a, _)| a / 200.0),
+    },
+    PidDef {
+        key: "o2_b1s2",
+        pid: 0x15,
+        name: "Лямбда B1S2 (узкополосный)",
+        unit: "В",
+        min: 0.0,
+        max: 1.275,
+        decode: |d| a2(d).map(|(a, _)| a / 200.0),
+    },
+    PidDef {
+        key: "fuel_pressure",
+        pid: 0x0A,
+        name: "Давление топлива (манометрическое)",
+        unit: "кПа",
+        min: 0.0,
+        max: 765.0,
+        decode: |d| a1(d).map(|a| a * 3.0),
+    },
+    PidDef {
+        key: "fuel_rail_pressure",
+        pid: 0x23,
+        name: "Давление в рампе (дизель / прямой впрыск)",
+        unit: "кПа",
+        min: 0.0,
+        max: 655350.0,
+        decode: |d| a2(d).map(|(a, b)| (a * 256.0 + b) * 10.0),
     },
     PidDef {
         key: "runtime",
@@ -237,6 +282,25 @@ mod tests {
     fn coolant_temp_formula() {
         let def = by_key("coolant_temp").unwrap();
         assert_eq!((def.decode)(&[0x7B]), Some(83.0));
+    }
+
+    #[test]
+    fn diagnostic_pid_formulas() {
+        for (key, bytes, expected) in [
+            ("timing_advance", vec![128], 0.0),
+            ("timing_advance", vec![0], -64.0),
+            ("timing_advance", vec![255], 63.5),
+            ("o2_b1s1", vec![180, 128], 0.9),
+            ("o2_b1s2", vec![20, 255], 0.1),
+            ("fuel_pressure", vec![100], 300.0),
+            ("fuel_rail_pressure", vec![0x01, 0x00], 2560.0),
+        ] {
+            let def = by_key(key).unwrap();
+            assert_eq!((def.decode)(&bytes), Some(expected), "{key}");
+            assert_eq!((def.decode)(&[]), None, "{key}");
+        }
+        assert_eq!((by_key("o2_b1s1").unwrap().decode)(&[180]), None);
+        assert_eq!((by_key("fuel_rail_pressure").unwrap().decode)(&[1]), None);
     }
 
     #[test]

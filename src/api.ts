@@ -62,13 +62,51 @@ export interface BtDevice {
   address: string;
 }
 
+export interface LogSummary {
+  path: string;
+  rows: number;
+}
+
+export interface ExportSettings {
+  format: string;
+  format_label: string;
+  dir_label: string;
+  is_default_dir: boolean;
+}
+
+export interface LogFileInfo {
+  id: string;
+  name: string;
+  size: number;
+  mtime_ms: number;
+}
+
+export interface LogColumn {
+  key: string;
+  name: string;
+  unit: string;
+}
+
+export interface ParsedLog {
+  columns: LogColumn[];
+  ts_ms: number[];
+  /** Значения по колонкам: values[i][строка] соответствует columns[i]. */
+  values: (number | null)[][];
+}
+
+export interface ImportedLog {
+  id: string;
+  name: string;
+  log: ParsedLog;
+}
+
 export const api = {
-  connectWifi: (host: string, port: number) =>
-    invoke<VehicleInfo>("connect_wifi", { host, port }),
-  connectSerial: (path: string, baud: number) =>
-    invoke<VehicleInfo>("connect_serial", { path, baud }),
-  connectBt: (address: string) =>
-    invoke<VehicleInfo>("connect_bt", { address }),
+  connectWifi: (host: string, port: number, protocol: number | null) =>
+    invoke<VehicleInfo>("connect_wifi", { host, port, protocol }),
+  connectSerial: (path: string, baud: number, protocol: number | null) =>
+    invoke<VehicleInfo>("connect_serial", { path, baud, protocol }),
+  connectBt: (address: string, protocol: number | null) =>
+    invoke<VehicleInfo>("connect_bt", { address, protocol }),
   listBtDevices: () => invoke<BtDevice[]>("plugin:btspp|list_paired"),
   listSerialPorts: () => invoke<string[]>("list_serial_ports"),
   disconnect: () => invoke<void>("disconnect"),
@@ -80,9 +118,27 @@ export const api = {
   readFreezeFrame: () => invoke<FreezeFrame>("read_freeze_frame"),
   startMonitoring: (keys: string[]) => invoke<void>("start_monitoring", { keys }),
   stopMonitoring: () => invoke<void>("stop_monitoring"),
+  startLogging: (keys: string[]) => invoke<string>("start_logging", { keys }),
+  stopLogging: () => invoke<LogSummary | null>("stop_logging"),
+  getExportSettings: () => invoke<ExportSettings>("get_export_settings"),
+  setExportFormat: (format: string) =>
+    invoke<ExportSettings>("set_export_format", { format }),
+  pickExportDir: () => invoke<ExportSettings | null>("pick_export_dir"),
+  resetExportDir: () => invoke<ExportSettings>("reset_export_dir"),
+  listLogs: () => invoke<LogFileInfo[]>("list_logs"),
+  readLog: (id: string, name: string) => invoke<ParsedLog>("read_log", { id, name }),
+  importLog: () => invoke<ImportedLog | null>("import_log"),
 };
 
 /** Подписка на поток живых данных. Возвращает функцию отписки. */
 export function onSample(cb: (s: Sample) => void): Promise<() => void> {
-  return listen<Sample>("obd-sample", (e) => cb(e.payload));
+  return listen<Sample>("obd-sample", (e) => {
+    cb(e.payload);
+    if (e.payload.key === "maf") {
+      // Только приближение для бензина при λ≈1. Не учитывает обогащение
+      // и отсечку впрыска; STFT/LTFT не являются прямым измерением расхода.
+      cb({ ...e.payload, key: "fuel_rate_maf", name: "Расход (оценка по MAF)",
+        unit: "л/ч", value: e.payload.value * 3600 / (14.7 * 720) });
+    }
+  });
 }

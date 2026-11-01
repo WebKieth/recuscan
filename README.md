@@ -4,6 +4,7 @@
 
 **Стек:** Tauri v2 (Rust) + React + TypeScript + uPlot.
 **Платформы:** Windows, Linux, macOS, Android.
+**Автор:** [shadowof.space](https://shadowof.space) · [Telegram-канал](https://t.me/shadowof_space) · [GitHub](https://github.com/WebKieth/recuscan)
 
 ## Возможности
 
@@ -11,6 +12,10 @@
 - 🚗 Автоопределение: протокол → VIN → производитель → поддерживаемые PID'ы
 - ⚠️ Чтение и сброс ошибок (stored / pending / permanent DTC)
 - 📊 Мониторинг в реальном времени: обороты, смесь (STFT/LTFT), расход топлива и др.
+- 💾 Запись мониторинга в CSV — для разбора логов после поездки (Excel/Python)
+- Сводные графики: до 4 цветных линий, две оси Y для разных единиц, общее окно времени 60 с. Создание, изменение, удаление и сохранение наборов на устройстве.
+- Шаблон «Обороты и расход, л/ч»: обороты слева, расход справа. Используется PID расхода ЭБУ, а при его отсутствии доступна явно помеченная оценка по MAF (только бензин, стехиометрическая смесь; не дизель/ГБО).
+- Диагностические шаблоны смеси, впуска, прогрева, питания, зажигания, лямбда-зондов и давления топлива. Доступность зависит от карты PID ЭБУ; узкополосные лямбда-графики через ELM327 не заменяют осциллограф.
 
 План работ: [PLAN.md](PLAN.md)
 
@@ -27,6 +32,8 @@ cargo test --manifest-path src-tauri/Cargo.toml   # тесты OBD-ядра
 Сборка релиза: `npm run tauri build`.
 
 Android: установите Android SDK/NDK по [инструкции Tauri](https://v2.tauri.app/start/prerequisites/#android), затем `npm run tauri android init` и `npm run tauri android dev`. Bluetooth Classic SPP реализован собственным плагином `plugins/tauri-plugin-btspp` (на iOS SPP заблокирован Apple — используйте Wi-Fi адаптер). Для Android-сборки без USB-Serial: `cargo build --no-default-features` (feature `serial`).
+
+Релизные APK по архитектурам: `npm run tauri android build -- --apk --split-per-abi` (≈5 МБ на APK; Rust-профиль `opt-level="z"` + LTO + strip, R8-минификация). Подпись — keystore в `src-tauri/gen/android/app/keystore.properties` (не коммитится, весь `gen/` в .gitignore).
 
 ## Тестирование без машины
 

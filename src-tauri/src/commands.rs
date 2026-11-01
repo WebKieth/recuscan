@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -7,10 +9,19 @@ use obd_core::readiness::{self, ReadinessItem};
 use obd_core::transport::TcpTransport;
 use obd_core::{dtc, pid, vin, ObdError};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
-use crate::state::AppState;
+use crate::logfmt::{self, ExportFormat, ParsedLog};
+use crate::settings::{self, Settings};
+use crate::state::{AppState, CsvLogger};
+
+#[cfg(target_os = "android")]
+use base64::Engine as _;
+#[cfg(target_os = "android")]
+use tauri_plugin_btspp::{ExportFileEntry, PickedUri, SaveExportArgs};
+#[cfg(not(target_os = "android"))]
+use tauri_plugin_dialog::DialogExt;
 
 fn err(e: ObdError) -> String {
     e.to_string()
@@ -57,14 +68,18 @@ pub struct DtcReport {
 }
 
 /// Подключение к Wi-Fi ELM327 адаптеру + автоопределение автомобиля.
+/// `protocol`: None — авто; Some(3/4/5) — форсировать K-line (ISO 9141-2 / KWP2000).
 #[tauri::command]
 pub async fn connect_wifi(
     state: State<'_, AppState>,
     host: String,
     port: u16,
+    protocol: Option<u8>,
 ) -> Result<VehicleInfo, String> {
     let transport = TcpTransport::connect(&host, port).await.map_err(err)?;
-    let mut elm = Elm327::init(Box::new(transport)).await.map_err(err)?;
+    let mut elm = Elm327::init_with_protocol(Box::new(transport), protocol)
+        .await
+        .map_err(err)?;
     let info = probe_vehicle(&mut elm).await;
 
     *state.vehicle.lock().await = Some(info.clone());
@@ -78,11 +93,14 @@ pub async fn connect_serial(
     state: State<'_, AppState>,
     path: String,
     baud: u32,
+    protocol: Option<u8>,
 ) -> Result<VehicleInfo, String> {
     #[cfg(feature = "serial")]
     {
         let transport = obd_core::transport::SerialTransport::open(&path, baud).map_err(err)?;
-        let mut elm = Elm327::init(Box::new(transport)).await.map_err(err)?;
+        let mut elm = Elm327::init_with_protocol(Box::new(transport), protocol)
+            .await
+            .map_err(err)?;
         let info = probe_vehicle(&mut elm).await;
 
         *state.vehicle.lock().await = Some(info.clone());
@@ -91,7 +109,7 @@ pub async fn connect_serial(
     }
     #[cfg(not(feature = "serial"))]
     {
-        let _ = (state, path, baud);
+        let _ = (state, path, baud, protocol);
         Err("сборка без поддержки Serial (feature `serial` отключён)".into())
     }
 }
@@ -112,6 +130,7 @@ pub async fn connect_bt(
     app: AppHandle,
     state: State<'_, AppState>,
     address: String,
+    protocol: Option<u8>,
 ) -> Result<VehicleInfo, String> {
     #[cfg(target_os = "android")]
     {
@@ -121,7 +140,9 @@ pub async fn connect_bt(
             .clone();
         plugin.connect(address).map_err(|e| e.to_string())?;
         let transport = crate::bt::BtTransport::new(plugin);
-        let mut elm = Elm327::init(Box::new(transport)).await.map_err(err)?;
+        let mut elm = Elm327::init_with_protocol(Box::new(transport), protocol)
+            .await
+            .map_err(err)?;
         let info = probe_vehicle(&mut elm).await;
 
         *state.vehicle.lock().await = Some(info.clone());
@@ -130,7 +151,7 @@ pub async fn connect_bt(
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (app, state, address);
+        let _ = (app, state, address, protocol);
         Err("Bluetooth SPP доступен только на Android (на iOS SPP заблокирован Apple)".into())
     }
 }
@@ -405,6 +426,7 @@ pub async fn start_monitoring(
     }
     let conn = state.conn.lock().await.clone();
     let conn = conn.ok_or(ObdError::NotConnected).map_err(err)?;
+    let log = state.log.clone();
 
     let defs: Vec<&'static pid::PidDef> =
         keys.iter().filter_map(|k| pid::by_key(k)).collect();
@@ -415,6 +437,8 @@ pub async fn start_monitoring(
     let handle = tokio::spawn(async move {
         let mut last_speed: Option<f64> = None;
         let mut last_maf: Option<f64> = None;
+        // Последние значения всех PID'ов — для строки CSV за цикл опроса
+        let mut latest: HashMap<String, f64> = HashMap::new();
         loop {
             for def in &defs {
                 let res = {
@@ -423,6 +447,7 @@ pub async fn start_monitoring(
                 };
                 if let Ok(data) = res {
                     if let Some(value) = (def.decode)(&data) {
+                        latest.insert(def.key.into(), value);
                         match def.key {
                             "speed" => last_speed = Some(value),
                             "maf" => last_maf = Some(value),
@@ -448,6 +473,7 @@ pub async fn start_monitoring(
                                 } else {
                                     0.0
                                 };
+                                latest.insert("fuel_consumption".into(), per_100km);
                                 let _ = app.emit(
                                     "obd-sample",
                                     Sample {
@@ -463,6 +489,13 @@ pub async fn start_monitoring(
                     }
                 }
             }
+            // Строка CSV за цикл (если включена запись); лок не держим во время сна
+            {
+                let mut guard = log.lock().await;
+                if let Some(logger) = guard.as_mut() {
+                    logger.write_row(now_ms(), &latest);
+                }
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     });
@@ -476,4 +509,540 @@ pub async fn stop_monitoring(state: State<'_, AppState>) -> Result<(), String> {
         h.abort();
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+pub struct LogSummary {
+    /// Отображаемый путь к экспортированному файлу (label, не обязательно fs-путь).
+    pub path: String,
+    pub rows: u64,
+}
+
+/// Начать запись мониторинга. Пишется временный CSV (переживает аварийное
+/// закрытие), при остановке конвертируется в выбранный формат и экспортируется
+/// в настроенную папку. Возвращает имя будущего файла.
+/// Если в опросе есть и скорость, и MAF — добавляет колонку расхода (л/100км).
+#[tauri::command]
+pub async fn start_logging(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+) -> Result<String, String> {
+    let mut keys: Vec<String> = keys;
+    if keys.iter().any(|k| k == "speed") && keys.iter().any(|k| k == "maf") {
+        keys.push("fuel_consumption".into());
+    }
+    let (path, file) = create_temp_log_file(&app)?;
+    let fmt = current_format(&app);
+    // Имя итогового файла (совпадает с тем, что вернёт stop_logging)
+    let export_display_name = export_name(&path, fmt.extension());
+    let mut writer = std::io::BufWriter::new(file);
+    // BOM — чтобы Excel корректно открыл UTF-8 с русскими именами колонок
+    use std::io::Write;
+    writer
+        .write_all("\u{FEFF}".as_bytes())
+        .and_then(|_| writeln!(writer, "ts_ms,{}", csv_header(&keys)))
+        .and_then(|_| writer.flush())
+        .map_err(|e| format!("не записать заголовок в {}: {e}", path.display()))?;
+
+    *state.log.lock().await = Some(CsvLogger::new(writer, keys, path));
+    Ok(export_display_name)
+}
+
+/// Завершить запись и экспортировать лог в настроенной папке и формате.
+/// Возвращает отображаемый путь и число строк (или None, если запись не велась).
+#[tauri::command]
+pub async fn stop_logging(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<LogSummary>, String> {
+    let logger = state.log.lock().await.take();
+    let Some(mut logger) = logger else {
+        return Ok(None);
+    };
+    logger.flush();
+    let rows = logger.rows;
+
+    let temp_bytes = std::fs::read(&logger.path)
+        .map_err(|e| format!("не прочитать временный лог {}: {e}", logger.path.display()))?;
+    let settings = settings::load(&app);
+    let fmt = current_format(&app);
+    let (data, name) = if fmt == ExportFormat::Csv {
+        // CSV: временный файл уже в нужном виде, только имя с датой старта записи
+        let name = logger
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| log_filename("csv"));
+        (temp_bytes, name)
+    } else {
+        // Конвертация: восстанавливаем ключи/единицы по реестру PID'ов
+        let mut log = logfmt::parse_csv(&temp_bytes)?;
+        log.columns = columns_for_keys(&logger.keys);
+        (
+            logfmt::render(fmt, &log),
+            export_name(&logger.path, fmt.extension()),
+        )
+    };
+    let label = write_export(&app, &settings, &name, fmt.mime(), &data)?;
+    let _ = std::fs::remove_file(&logger.path);
+    Ok(Some(LogSummary { path: label, rows }))
+}
+
+/// Имя экспорта из имени временного файла с подменой расширения.
+fn export_name(temp_path: &std::path::Path, ext: &str) -> String {
+    temp_path
+        .file_stem()
+        .map(|s| format!("{}.{ext}", s.to_string_lossy()))
+        .unwrap_or_else(|| log_filename(ext))
+}
+
+/// Заголовок CSV: человекочитаемые имена с единицами, где PID известен реестру.
+fn csv_header(keys: &[String]) -> String {
+    columns_for_keys(keys)
+        .iter()
+        .map(|c| {
+            if c.unit.is_empty() {
+                c.name.clone()
+            } else {
+                format!("{} [{}]", c.name, c.unit)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Метаданные колонок лога по ключам PID'ов (для конвертации в JSON/XLS).
+fn columns_for_keys(keys: &[String]) -> Vec<logfmt::LogColumn> {
+    keys.iter()
+        .map(|k| {
+            let (name, unit) = match k.as_str() {
+                "fuel_consumption" => ("Расход топлива (оценка)", "л/100км"),
+                _ => pid::by_key(k).map(|d| (d.name, d.unit)).unwrap_or((k.as_str(), "")),
+            };
+            logfmt::LogColumn {
+                key: k.clone(),
+                name: name.to_string(),
+                unit: unit.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Временный файл записи: приватный кэш — всегда доступен для записи,
+/// в т.ч. на Android со scoped storage. Экспорт — при остановке записи.
+fn create_temp_log_file(app: &AppHandle) -> Result<(PathBuf, std::fs::File), String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("cache dir недоступна: {e}"))?
+        .join("recuscan");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("не создать {}: {e}", dir.display()))?;
+    let path = dir.join(log_filename("csv"));
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("не создать {}: {e}", path.display()))?;
+    Ok((path, file))
+}
+
+fn current_format(app: &AppHandle) -> ExportFormat {
+    ExportFormat::parse(
+        settings::load(app)
+            .export_format
+            .as_deref()
+            .unwrap_or("csv"),
+    )
+}
+
+/// Записать готовый файл экспорта: SAF/MediaStore на Android, fs на десктопе.
+/// Возвращает отображаемый путь (label).
+fn write_export(
+    app: &AppHandle,
+    settings: &Settings,
+    file_name: &str,
+    mime: &str,
+    data: &[u8],
+) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        let plugin = app
+            .state::<tauri_plugin_btspp::BtSpp<tauri::Wry>>()
+            .inner()
+            .clone();
+        let resp = plugin
+            .save_export(SaveExportArgs {
+                tree_uri: saf_dir(settings),
+                file_name: file_name.to_string(),
+                mime: mime.to_string(),
+                data: base64::engine::general_purpose::STANDARD.encode(data),
+            })
+            .map_err(|e| e.to_string())?;
+        return Ok(resp.label);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = mime; // на десктопе тип файла определяется расширением
+        let dir = settings
+            .export_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_export_dir(app));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("не создать {}: {e}", dir.display()))?;
+        let path = dir.join(file_name);
+        std::fs::write(&path, data).map_err(|e| format!("не записать {}: {e}", path.display()))?;
+        return Ok(path.display().to_string());
+    }
+}
+
+/// SAF tree URI из настроек (Android); None — папка по умолчанию (Загрузки/recuscan).
+#[cfg(target_os = "android")]
+fn saf_dir(settings: &Settings) -> Option<String> {
+    settings
+        .export_dir
+        .clone()
+        .filter(|d| d.starts_with("content://"))
+}
+
+/// Папка экспорта по умолчанию на десктопе: Документы → Загрузки → temp.
+#[cfg(not(target_os = "android"))]
+fn default_export_dir(app: &AppHandle) -> PathBuf {
+    let p = app.path();
+    p.document_dir()
+        .ok()
+        .or_else(|| p.download_dir().ok())
+        .unwrap_or_else(std::env::temp_dir)
+        .join("recuscan")
+}
+
+// ---------- Настройки экспорта ----------
+
+#[derive(Serialize)]
+pub struct ExportSettingsDto {
+    pub format: String,
+    pub format_label: String,
+    pub dir_label: String,
+    pub is_default_dir: bool,
+}
+
+fn settings_dto(app: &AppHandle, settings: &Settings) -> ExportSettingsDto {
+    let fmt = ExportFormat::parse(settings.export_format.as_deref().unwrap_or("csv"));
+    let (dir_label, is_default_dir) = match &settings.export_dir {
+        Some(dir) => (
+            settings
+                .export_dir_label
+                .clone()
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| dir.clone()),
+            false,
+        ),
+        None => (default_dir_label(app), true),
+    };
+    ExportSettingsDto {
+        format: fmt.as_str().into(),
+        format_label: fmt.label().into(),
+        dir_label,
+        is_default_dir,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn default_dir_label(_app: &AppHandle) -> String {
+    // MediaStore Downloads/recuscan (на API < 29 Kotlin падает в app-specific папку)
+    "Загрузки/recuscan".into()
+}
+
+#[cfg(not(target_os = "android"))]
+fn default_dir_label(app: &AppHandle) -> String {
+    default_export_dir(app).display().to_string()
+}
+
+#[tauri::command]
+pub async fn get_export_settings(app: AppHandle) -> Result<ExportSettingsDto, String> {
+    Ok(settings_dto(&app, &settings::load(&app)))
+}
+
+#[tauri::command]
+pub async fn set_export_format(app: AppHandle, format: String) -> Result<ExportSettingsDto, String> {
+    let fmt = ExportFormat::parse(&format);
+    let mut s = settings::load(&app);
+    s.export_format = Some(fmt.as_str().into());
+    settings::save(&app, &s)?;
+    Ok(settings_dto(&app, &s))
+}
+
+/// Выбор папки экспорта: нативный диалог (десктоп) или SAF-пикер (Android).
+/// None — пользователь отменил выбор.
+#[tauri::command]
+pub async fn pick_export_dir(app: AppHandle) -> Result<Option<ExportSettingsDto>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let plugin = app
+            .state::<tauri_plugin_btspp::BtSpp<tauri::Wry>>()
+            .inner()
+            .clone();
+        let PickedUri { uri, name } = plugin.pick_folder().map_err(|e| e.to_string())?;
+        let Some(uri) = uri else {
+            return Ok(None);
+        };
+        let mut s = settings::load(&app);
+        s.export_dir = Some(uri);
+        s.export_dir_label = name;
+        settings::save(&app, &s)?;
+        return Ok(Some(settings_dto(&app, &s)));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let app2 = app.clone();
+        let folder = tauri::async_runtime::spawn_blocking(move || {
+            app2.dialog().file().blocking_pick_folder()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let Some(folder) = folder else {
+            return Ok(None);
+        };
+        let path = folder
+            .into_path()
+            .map_err(|_| "выбранный объект не является путём на диске".to_string())?;
+        let mut s = settings::load(&app);
+        s.export_dir = Some(path.display().to_string());
+        s.export_dir_label = None; // путь сам говорящий
+        settings::save(&app, &s)?;
+        return Ok(Some(settings_dto(&app, &s)));
+    }
+}
+
+/// Сбросить папку экспорта на папку по умолчанию.
+#[tauri::command]
+pub async fn reset_export_dir(app: AppHandle) -> Result<ExportSettingsDto, String> {
+    let mut s = settings::load(&app);
+    s.export_dir = None;
+    s.export_dir_label = None;
+    settings::save(&app, &s)?;
+    Ok(settings_dto(&app, &s))
+}
+
+// ---------- Анализ логов: список, чтение, импорт ----------
+
+#[derive(Serialize)]
+pub struct LogFileInfo {
+    /// Идентификатор для read_log: fs-путь или content:// URI.
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub mtime_ms: u64,
+}
+
+#[derive(Serialize)]
+pub struct ParsedLogDto {
+    pub columns: Vec<logfmt::LogColumn>,
+    pub ts_ms: Vec<u64>,
+    /// Значения по колонкам: values[i][строка] соответствует columns[i].
+    pub values: Vec<Vec<Option<f64>>>,
+}
+
+impl From<ParsedLog> for ParsedLogDto {
+    fn from(log: ParsedLog) -> Self {
+        Self {
+            columns: log.columns,
+            ts_ms: log.ts_ms,
+            values: log.values,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ImportedLog {
+    pub id: String,
+    pub name: String,
+    pub log: ParsedLogDto,
+}
+
+fn log_extension(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or("").trim()
+}
+
+/// Разбор по расширению имени; без расширения — пробуем CSV, затем JSON.
+fn parse_log_bytes(name: &str, bytes: &[u8]) -> Result<ParsedLogDto, String> {
+    let ext = log_extension(name).to_lowercase();
+    match ext.as_str() {
+        "csv" | "json" | "xls" => logfmt::parse(&ext, bytes).map(ParsedLogDto::from),
+        _ => logfmt::parse("csv", bytes)
+            .or_else(|_| logfmt::parse("json", bytes))
+            .map(ParsedLogDto::from)
+            .map_err(|e| format!("не удалось разобрать лог ни как CSV, ни как JSON: {e}")),
+    }
+}
+
+/// Список записанных логов в папке экспорта (выбранной или по умолчанию).
+#[tauri::command]
+pub async fn list_logs(app: AppHandle) -> Result<Vec<LogFileInfo>, String> {
+    let settings = settings::load(&app);
+    #[cfg(target_os = "android")]
+    {
+        let plugin = app
+            .state::<tauri_plugin_btspp::BtSpp<tauri::Wry>>()
+            .inner()
+            .clone();
+        let files: Vec<ExportFileEntry> =
+            plugin.list_exports(saf_dir(&settings)).map_err(|e| e.to_string())?;
+        let mut logs: Vec<LogFileInfo> = files
+            .into_iter()
+            .filter(|f| matches!(log_extension(&f.name).to_lowercase().as_str(), "csv" | "json"))
+            .map(|f| LogFileInfo {
+                id: f.uri,
+                name: f.name,
+                size: f.size.max(0) as u64,
+                mtime_ms: f.mtime.max(0) as u64,
+            })
+            .collect();
+        logs.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+        logs.truncate(200);
+        return Ok(logs);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = settings
+            .export_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_export_dir(&app));
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(Vec::new()), // папки ещё нет — логов не записывали
+        };
+        let mut logs: Vec<LogFileInfo> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                matches!(
+                    log_extension(&e.file_name().to_string_lossy()).to_lowercase().as_str(),
+                    "csv" | "json"
+                )
+            })
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
+                let mtime_ms = meta
+                    .modified()
+                    .ok()?
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                Some(LogFileInfo {
+                    id: e.path().display().to_string(),
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    size: meta.len(),
+                    mtime_ms,
+                })
+            })
+            .collect();
+        logs.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+        logs.truncate(200);
+        return Ok(logs);
+    }
+}
+
+/// Прочитать и разобрать лог по идентификатору из list_logs/import.
+#[tauri::command]
+pub async fn read_log(app: AppHandle, id: String, name: String) -> Result<ParsedLogDto, String> {
+    let bytes = read_log_bytes(&app, &id)?;
+    parse_log_bytes(&name, &bytes)
+}
+
+/// Импорт лога из произвольного места: диалог выбора файла (десктоп)
+/// или SAF-пикер документа (Android). None — отмена.
+#[tauri::command]
+pub async fn import_log(app: AppHandle) -> Result<Option<ImportedLog>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let plugin = app
+            .state::<tauri_plugin_btspp::BtSpp<tauri::Wry>>()
+            .inner()
+            .clone();
+        let PickedUri { uri, name } = plugin.pick_log_file().map_err(|e| e.to_string())?;
+        let Some(uri) = uri else {
+            return Ok(None);
+        };
+        let name = name.unwrap_or_else(|| "лог.csv".into());
+        let bytes = read_log_bytes(&app, &uri)?;
+        let log = parse_log_bytes(&name, &bytes)?;
+        return Ok(Some(ImportedLog { id: uri, name, log }));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let app2 = app.clone();
+        let file = tauri::async_runtime::spawn_blocking(move || {
+            app2
+                .dialog()
+                .file()
+                .add_filter("Логи RecuScan", &["csv", "json"])
+                .blocking_pick_file()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let Some(file) = file else {
+            return Ok(None);
+        };
+        let path = file
+            .into_path()
+            .map_err(|_| "выбранный объект не является путём на диске".to_string())?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "лог.csv".into());
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("не прочитать {}: {e}", path.display()))?;
+        let log = parse_log_bytes(&name, &bytes)?;
+        return Ok(Some(ImportedLog {
+            id: path.display().to_string(),
+            name,
+            log,
+        }));
+    }
+}
+
+/// Байты лога по идентификатору: content:// через Kotlin, file:// и пути — напрямую.
+fn read_log_bytes(app: &AppHandle, id: &str) -> Result<Vec<u8>, String> {
+    #[cfg(not(target_os = "android"))]
+    let _ = app; // content:// на десктопе не бывает, читаем только пути
+    if id.starts_with("content://") {        #[cfg(target_os = "android")]
+        {
+            let plugin = app
+                .state::<tauri_plugin_btspp::BtSpp<tauri::Wry>>()
+                .inner()
+                .clone();
+            let resp = plugin
+                .read_export(id.to_string())
+                .map_err(|e| e.to_string())?;
+            return base64::engine::general_purpose::STANDARD
+                .decode(resp.data)
+                .map_err(|e| format!("битый base64 из плагина: {e}"));
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            return Err("content:// URI доступны только на Android".into());
+        }
+    }
+    let path = id.strip_prefix("file://").unwrap_or(id);
+    std::fs::read(path).map_err(|e| format!("не прочитать {path}: {e}"))
+}
+
+/// Имя файла вида recuscan-20261031-153012.<ext> (UTC; civil-from-days по Хиннанту).
+fn log_filename(ext: &str) -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (h, mi, s) = (rem / 3600, rem % 3600 / 60, rem % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("recuscan-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}.{ext}")
 }

@@ -9,6 +9,15 @@ use crate::{ObdError, Result};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(4);
 
+/// Проба связи с ЭБУ на конкретном протоколе. K-line инициализация
+/// (5-бод адресация ISO 9141-2 / KWP2000 5-baud) занимает 3–8 с,
+/// на дешёвых клонах ELM327 — дольше. Стандартных 4 с не хватает.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// Автопоиск (ATSP0) перебирает все протоколы адаптера, включая медленные
+/// K-line — на старых авто это может занять до ~30 с.
+const AUTO_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct Elm327 {
     t: Box<dyn Transport>,
     timeout: Duration,
@@ -16,9 +25,17 @@ pub struct Elm327 {
 
 impl Elm327 {
     /// Стандартная инициализация адаптера и автовыбор протокола.
-    /// Если авто-определение не нашло ЭБУ (частая болезнь дешёвых клонов),
-    /// перебираем протоколы вручную в порядке убывания распространённости.
     pub async fn init(t: Box<dyn Transport>) -> Result<Self> {
+        Self::init_with_protocol(t, None).await
+    }
+
+    /// Инициализация адаптера и выбор протокола.
+    ///
+    /// `protocol`: None — авто (ATSP0, при неудаче ручной перебор),
+    /// Some(n) — жёстко задать ATSPn (1–9). Для старых K-line авто
+    /// (VAG/VAZ ~1996–2005) полезно форсировать 3 (ISO 9141-2)
+    /// или 4/5 (KWP2000): авто-поиск на клонах ELM327 часто их не находит.
+    pub async fn init_with_protocol(t: Box<dyn Transport>, protocol: Option<u8>) -> Result<Self> {
         let mut elm = Self {
             t,
             timeout: DEFAULT_TIMEOUT,
@@ -30,22 +47,41 @@ impl Elm327 {
         elm.at("ATL0").await?; // linefeeds off
         elm.at("ATS0").await?; // spaces off
         elm.at("ATH0").await?; // headers off — упрощает разбор полезной нагрузки
+        elm.at("ATAT1").await?; // adaptive timing — старые ЭБУ отвечают медленно
 
-        elm.at("ATSP0").await?; // автоматический выбор протокола
-        if elm.query_pid(0x01, 0x00).await.is_ok() {
+        if let Some(p) = protocol {
+            elm.at(&format!("ATSP{p}")).await?;
+            elm.probe_ecu(PROBE_TIMEOUT).await?;
+            // Фиксируем протокол, чтобы адаптер не искал заново
+            let _ = elm.at(&format!("ATTP{p}")).await;
             return Ok(elm);
         }
 
-        // Fallback: ручной перебор. 6-9 — CAN (ISO 15765-4), 3-5 — ISO/KWP/J1850
+        elm.at("ATSP0").await?; // автоматический выбор протокола
+        if elm.probe_ecu(AUTO_SEARCH_TIMEOUT).await.is_ok() {
+            return Ok(elm);
+        }
+
+        // Fallback: ручной перебор. 6-9 — CAN (ISO 15765-4), 3-5 — ISO/KWP
         for proto in [6u8, 7, 8, 9, 3, 4, 5] {
             elm.at(&format!("ATSP{proto}")).await?;
-            if elm.query_pid(0x01, 0x00).await.is_ok() {
+            if elm.probe_ecu(PROBE_TIMEOUT).await.is_ok() {
                 // Фиксируем найденный протокол, чтобы адаптер не искал заново
                 let _ = elm.at(&format!("ATTP{proto}")).await;
                 return Ok(elm);
             }
         }
         Err(ObdError::ConnectionFailed)
+    }
+
+    /// Проверка связи с ЭБУ (0100) с увеличенным таймаутом:
+    /// первая транзакция на K-line включает инициализацию шины и идёт долго.
+    async fn probe_ecu(&mut self, wait: Duration) -> Result<()> {
+        let saved = self.timeout;
+        self.timeout = wait;
+        let res = self.query_pid(0x01, 0x00).await;
+        self.timeout = saved;
+        res.map(|_| ())
     }
 
     /// AT-команда адаптера.
@@ -66,7 +102,12 @@ impl Elm327 {
     /// Запрос Mode/PID (напр. mode=0x01, pid=0x0C → «010C»). Возвращает байты данных.
     pub async fn query_pid(&mut self, mode: u8, pid: u8) -> Result<Vec<u8>> {
         let raw = self.raw(&format!("{mode:02X}{pid:02X}")).await?;
-        if raw.contains("NODATA") {
+        // Служебные сообщения идут с пробелами («UNABLE TO CONNECT», «NO DATA»)
+        let flat: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        if flat.contains("UNABLETOCONNECT") {
+            return Err(ObdError::ConnectionFailed);
+        }
+        if flat.contains("NODATA") {
             return Err(ObdError::NoData);
         }
         let lines = parse_obd_lines(&raw);
@@ -76,7 +117,11 @@ impl Elm327 {
     /// Запрос режима без PID (03, 04, 07, 0A). Возвращает объединённые данные.
     pub async fn query_mode(&mut self, mode: u8) -> Result<Vec<u8>> {
         let raw = self.raw(&format!("{mode:02X}")).await?;
-        if raw.contains("NODATA") {
+        let flat: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        if flat.contains("UNABLETOCONNECT") {
+            return Err(ObdError::ConnectionFailed);
+        }
+        if flat.contains("NODATA") {
             return Err(ObdError::NoData);
         }
         let lines = parse_obd_lines(&raw);
@@ -112,14 +157,19 @@ pub fn parse_obd_lines(raw: &str) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     for line in raw.split(['\r', '\n']) {
         let line = line.trim();
-        if line.is_empty()
-            || line.contains("SEARCHING")
-            || line.contains("STOPPED")
-            || line.contains("NODATA")
-            || line.contains("ELM327")
-            || line == "OK"
-            || line == "?"
-            || line.starts_with("AT")
+        // Служебные сообщения сравниваем без пробелов («NO DATA», «UNABLE TO CONNECT»)
+        let flat: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if flat.is_empty()
+            || flat.contains("SEARCHING")
+            || flat.contains("STOPPED")
+            || flat.contains("NODATA")
+            || flat.contains("UNABLETOCONNECT")
+            || flat.contains("BUSINIT")
+            || flat.contains("CANERROR")
+            || flat.contains("ELM327")
+            || flat == "OK"
+            || flat == "?"
+            || flat.starts_with("AT")
         {
             continue;
         }
