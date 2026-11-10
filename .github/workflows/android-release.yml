@@ -48,6 +48,11 @@ jobs:
           java-version: '21'
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The action defaults to "tools platform-tools", but the legacy
+          # "tools" package is no longer available in the SDK repository.
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       - name: Install Android SDK and NDK
         run: |
