@@ -95,6 +95,11 @@ jobs:
           org.gradle.workers.max=1
           EOF
 
+      - name: Generate RecuScan launcher icons
+        # android init creates default Tauri icons in the ignored gen/ tree.
+        # Generate our legacy and adaptive icons AFTER initializing that tree.
+        run: npm run tauri -- icon app-icon.png --ios-color '#1c2129'
+
       - name: Build release APKs
         run: >-
           npm run tauri -- android build --ci --apk --split-per-abi
