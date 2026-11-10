@@ -5,5 +5,11 @@ src-tauri/gen/
 plugins/tauri-plugin-btspp/android/build
 plugins/tauri-plugin-btspp/android/.tauri/
 *.apk
+*.jks
+*.keystore
+keystore.properties
+src-tauri/tauri.ci.conf.json
+/release/
+/docs.md
 *.log
 .DS_Store

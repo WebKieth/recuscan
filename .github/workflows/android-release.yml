@@ -1,0 +1,149 @@
+name: Android release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NDK_VERSION: 27.2.12479018
+      BUILD_TOOLS_VERSION: 37.0.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing repository secret: $name. Configure it in Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          # The Bluetooth plugin uses compileSdk 37.
+          sdkmanager "platforms;android-37.0" "build-tools;$BUILD_TOOLS_VERSION" "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: Prepare build version
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const config = { bundle: { android: { versionCode: 1000000 + Number(process.env.GITHUB_RUN_NUMBER) } } };
+          if (process.env.GITHUB_REF_TYPE === 'tag') {
+            const version = process.env.GITHUB_REF_NAME.slice(1);
+            if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Use a stable version tag, e.g. v0.1.0');
+            config.version = version;
+          }
+          fs.writeFileSync('src-tauri/tauri.ci.conf.json', JSON.stringify(config));
+          JS
+
+      - name: Initialize Android project
+        run: |
+          npm run tauri -- android init --ci --skip-targets-install
+          # Tauri's plugin build script copies Android sources. Avoid racing
+          # Gradle compilation against that copy when building multiple ABIs.
+          cat >> src-tauri/gen/android/gradle.properties <<'EOF'
+
+          org.gradle.parallel=false
+          org.gradle.workers.max=1
+          EOF
+
+      - name: Build release APKs
+        run: >-
+          npm run tauri -- android build --ci --apk --split-per-abi
+          --config src-tauri/tauri.ci.conf.json --target aarch64 armv7
+
+      - name: Sign and verify APKs
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: bash .github/scripts/sign-android.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    # Manual runs from other branches can build, but cannot publish releases.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-release
+          path: release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag="$GITHUB_REF_NAME"
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --verify-tag --title "RecuScan $tag" --generate-notes --latest
+            fi
+          else
+            tag=latest
+            if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+              gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true
+            else
+              gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+            fi
+            notes="Automatic development build from main. Commit: $GITHUB_SHA. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release edit "$tag" --title 'RecuScan — development build' --notes "$notes" --prerelease --latest=false
+            else
+              gh release create "$tag" --verify-tag --title 'RecuScan — development build' --notes "$notes" --prerelease --latest=false
+            fi
+          fi
+          gh release upload "$tag" release/* --clobber

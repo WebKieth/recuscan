@@ -33,7 +33,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # тесты OBD-ядра
 
 Android: установите Android SDK/NDK по [инструкции Tauri](https://v2.tauri.app/start/prerequisites/#android), затем `npm run tauri android init` и `npm run tauri android dev`. Bluetooth Classic SPP реализован собственным плагином `plugins/tauri-plugin-btspp` (на iOS SPP заблокирован Apple — используйте Wi-Fi адаптер). Для Android-сборки без USB-Serial: `cargo build --no-default-features` (feature `serial`).
 
-Релизные APK по архитектурам: `npm run tauri android build -- --apk --split-per-abi` (≈5 МБ на APK; Rust-профиль `opt-level="z"` + LTO + strip, R8-минификация). Подпись — keystore в `src-tauri/gen/android/app/keystore.properties` (не коммитится, весь `gen/` в .gitignore).
+Релизные APK по архитектурам: `npm run tauri -- android build --apk --split-per-abi` (Rust-профиль `opt-level="z"` + LTO + strip). Локальная подпись настраивается отдельно в генерируемом Android-проекте; весь `gen/` в .gitignore.
 
 ## Тестирование без машины
 
