@@ -1,6 +1,6 @@
 [package]
 name = "recuscan"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "RecuScan — открытый сканнер ЭБУ (ELM327/OBD2)"
 
