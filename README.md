@@ -35,6 +35,12 @@ Android: установите Android SDK/NDK по [инструкции Tauri](
 
 Релизные APK по архитектурам: `npm run tauri -- android build --apk --split-per-abi` (Rust-профиль `opt-level="z"` + LTO + strip). Локальная подпись настраивается отдельно в генерируемом Android-проекте; весь `gen/` в .gitignore.
 
+## Готовые пакеты
+
+В [GitHub Releases](https://github.com/WebKieth/recuscan/releases) автоматически собираются Android APK (ARM64/ARMv7), Windows x64 (`.exe`, `.msi`), Ubuntu x64 (`.deb`, `.AppImage`) и macOS Universal (`.dmg`, Intel и Apple Silicon). `latest` — тестовые сборки из `main`, теги `vX.Y.Z` — стабильные релизы. Файл `SHA256SUMS.txt` содержит контрольные суммы всех пакетов.
+
+Десктопные пакеты не подписаны сертификатами разработчика Microsoft/Apple; macOS-сборки не нотариализованы. Возможны предупреждения SmartScreen/Gatekeeper. Ubuntu-пакеты собираются на Ubuntu 22.04; для `.deb` системные зависимости устанавливает пакетный менеджер.
+
 ## Тестирование без машины
 
 Используйте эмулятор [ELM327-emulator (OBDSim)](https://github.com/Ircama/ELM327-emulator) — поднимает ELM327 на TCP-порту, приложение подключается к нему как к обычному Wi-Fi адаптеру.
